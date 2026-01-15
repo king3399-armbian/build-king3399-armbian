@@ -1,0 +1,92 @@
+#!/bin/bash
+
+RELEASE=$1
+LINUXFAMILY=$2
+BOARD=$3
+BUILD_DESKTOP=$4
+ARCH=$5
+
+set -e
+
+# Copy DTB, Unofficial support board update kernel while lost dtb.
+BOOT_CONF=/boot/extlinux/extlinux.conf
+if [ -f ${BOOT_CONF} ]; then
+    mkdir -p /boot/dtb
+    DTB_PATH=$(cat ${BOOT_CONF} | grep 'fdt /boot/dtb/' | awk '{print $2}')
+    DTB_NAME=$(echo ${DTB_PATH##*/})
+    NEW_PATH=/boot/dtb/${DTB_NAME}
+    \cp ${DTB_PATH} ${NEW_PATH}
+    sed -i "s|${DTB_PATH}|${NEW_PATH}|g" ${BOOT_CONF}
+fi
+
+# Disable update kernel
+mkdir -p /etc/apt/preferences.d
+DISABLE_UPDATE_CONF=/etc/apt/preferences.d/disable-update
+PKG_LIST=$(dpkg-query --show --showformat='${Package}\n')
+
+function DISABLE_UPDATE() {
+    echo -e "Package: $1\nPin: version *\nPin-Priority: -1\n" >> ${DISABLE_UPDATE_CONF}
+}
+
+cat /dev/null > ${DISABLE_UPDATE_CONF}
+DISABLE_UPDATE armbian-firmware
+DISABLE_UPDATE $(echo "${PKG_LIST}" | grep "armbian-bsp-cli-")
+DISABLE_UPDATE $(echo "${PKG_LIST}" | grep "^linux-image-")
+DISABLE_UPDATE $(echo "${PKG_LIST}" | grep "^linux-dtb-")
+DISABLE_UPDATE $(echo "${PKG_LIST}" | grep "^linux-u-boot")
+
+# Replace USTC mirror source
+FIRST_RUN=/root/first_run.sh
+cat <<EOF >${FIRST_RUN}
+#!/bin/bash
+
+# Set mirrors to USTC
+# Debian
+sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list
+sed -i 's|security.debian.org|mirrors.ustc.edu.cn/debian-security|g' /etc/apt/sources.list
+
+# Ubuntu
+sed -i 's|ports.ubuntu.com|mirrors.ustc.edu.cn/ubuntu-ports|g' /etc/apt/sources.list
+sed -i 's|ports.ubuntu.com|mirrors.ustc.edu.cn/ubuntu-ports|g' /etc/apt/sources.list.d/ubuntu.sources
+
+# Armbian
+sed -i 's|apt.armbian.com|mirrors.ustc.edu.cn/armbian|g' /etc/apt/sources.list.d/armbian.list
+sed -i 's|beta.armbian.com|mirrors.ustc.edu.cn/armbian|g' /etc/apt/sources.list.d/armbian.list
+
+EOF
+chmod +x ${FIRST_RUN}
+
+# htoprc
+mkdir -p /etc/skel/.config/htop
+cat <<EOF >/etc/skel/.config/htop/htoprc
+show_cpu_usage=1
+show_cpu_frequency=1
+show_cpu_temperature=1
+tree_view=1
+hide_userland_threads=1
+
+EOF
+
+# ZCube1 Max no have WiFi
+if [ "${BOARD}" = "zcube1-max" ]; then
+    systemctl disable wpa_supplicant.service
+fi
+
+# CDHX-RB30 need reload AX88179 module
+if [ "${BOARD}" = "cdhx-rb30" ]; then
+    sed -i '$i\rmmod ax88179_178a\nmodprobe ax88179_178a\n' /etc/rc.local
+fi
+
+# Board-specific overlay from host: userpatches/overlay/<board>/...
+BOARD_OVERLAY_DIR="/tmp/overlay/${BOARD}"
+if [ -d "${BOARD_OVERLAY_DIR}" ]; then
+    (cd "${BOARD_OVERLAY_DIR}" && cp -a . /)
+fi
+
+# king3399 no have bluetooth
+if [ "${BOARD}" = "king3399" ]; then
+    chmod 0755 /usr/bin/brcm_patchram_plus_rk3399
+	chmod 0755 /usr/lib/systemd/system/rk3399-bluetooth.service
+	chown root:root /usr/bin/brcm_patchram_plus_rk3399
+	systemctl enable rk3399-bluetooth.service
+fi
